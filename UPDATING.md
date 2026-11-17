@@ -1,18 +1,18 @@
 # Updating the upstream version
 
-<!--
-TODO: Describe what "upstream" means for Documenso (a Docker image pinned by tag, a git
-submodule, or a self-built image) and how to track its version, one subsection per pinned
-source. This file is the bump recipe and nothing else: no version, migration or release-note
-rules, no test plan, no design notes. See project-structure.md § UPDATING.md in the packaging
-guide. Remove these comments.
--->
-
 ## Determining the upstream version
 
-<!-- TODO: where the current pin lives in startos/manifest/index.ts, and how to fetch the
-     latest upstream version (e.g. `gh release view -R <org>/<repo> --json tagName -q .tagName`). -->
+Documenso is the `documenso/documenso` Docker Hub image, pinned by `documensoVersion` in `startos/manifest/index.ts`. Its tags are the GitHub release tags, `v`-prefixed:
+
+```bash
+gh release view -R documenso/documenso --json tagName -q .tagName
+docker manifest inspect documenso/documenso:<tag> | jq -r '.manifests[].platform.architecture'
+```
+
+PostgreSQL is `postgres:15-alpine`, the major version upstream's compose files and CI run. Raise it only when upstream does: a major-version change needs a dump and restore, not an image bump.
 
 ## Applying the bump
 
-<!-- TODO: the exact file and field to edit, including any tag-format quirks. -->
+1. Set `documensoVersion` in `startos/manifest/index.ts` to the new tag, `v` included.
+2. Set `version` in `startos/versions/current.ts` to the tag without its `v`, with a `:0` revision.
+3. Read the release notes for changes to the environment variables in `startos/main.ts`, the signup endpoint and `User`/`Session` fields used by `applyAdminScript`, and `@node-rs/bcrypt` in `startos/actions/setAdminCredentials.ts`.
