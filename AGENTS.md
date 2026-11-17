@@ -1,0 +1,9 @@
+# AGENTS.md
+
+This is a StartOS service-package repository — it builds a `.s9pk` for StartOS.
+
+Develop it inside a StartOS packaging workspace created by `start-cli s9pk init-workspace`,
+which provides the packaging guide and agent context one level up. If you're reading this in a
+bare clone with no workspace, the full guide is at <https://docs.start9.com/packaging>.
+
+- `applyAdminScript` (`startos/main.ts`) runs inside the upstream image against its Prisma client and signup route; re-test **Set Admin Credentials** on a box after every upstream bump.
