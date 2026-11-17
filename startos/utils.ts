@@ -1,4 +1,5 @@
 export const uiPort = 3000
+export const adminBootstrapPort = 3001
 export const uiHostId = 'ui-multi'
 export const uiInterfaceId = 'ui'
 

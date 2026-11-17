@@ -33,7 +33,7 @@ If SMTP is not set up, choose **None** instead of **Email** when you send a docu
 
 ### Actions
 
-- **Set Admin Credentials** — run it again to reset your password. It generates a new one, signs your account out everywhere, and restarts Documenso. Enter a different email to make another existing account an admin.
+- **Set Admin Credentials** — run it again to reset your password. It generates a new one, invalidates existing password-reset and email-confirmation links, signs your account out everywhere, and restarts Documenso. The Web UI is unavailable while the credentials are being applied. Enter a different email to make another existing account an admin.
 - **Set Primary URL** — the address Documenso puts in signing links and emails, and the only one you can sign in from.
 - **Configure SMTP** — how Documenso sends email.
 - **Enable Signups** / **Disable Signups** — whether anyone who can reach Documenso can create an account. Signups start disabled.

@@ -34,10 +34,10 @@
 
 The package runs two upstream images, unmodified, on `x86_64` and `aarch64`.
 
-| Subcontainer    | Image                 | Purpose                                                                                |
-| --------------- | --------------------- | -------------------------------------------------------------------------------------- |
-| `postgres-sub`  | `postgres` (Alpine)   | The database, listening on `127.0.0.1:5432` only.                                      |
-| `documenso-sub` | `documenso/documenso` | The app. Its default entrypoint applies database migrations, then serves on port 3000. |
+| Subcontainer    | Image                 | Purpose                                                                                              |
+| --------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `postgres-sub`  | `postgres` (Alpine)   | The database, listening on `127.0.0.1:5432` only.                                                    |
+| `documenso-sub` | `documenso/documenso` | The app. Its default entrypoint applies database migrations, then serves on the configured app port. |
 
 Two short-lived subcontainers also run from the Documenso image: `signing-certificate` at init, to create the signing certificate if it is missing, and `hash-admin-password` while **Set Admin Credentials** runs.
 
@@ -78,8 +78,8 @@ Outbound: SMTP to the configured mail server, and webhooks users configure. Tele
 ## Installation and First-Run Flow
 
 - Install generates every secret and the self-signed signing certificate (`CN=Documenso on StartOS`, RSA 2048, valid 100 years). Upstream ships no certificate and cannot sign without one.
-- Documenso has no admin bootstrap, so the package provides one. **Set Admin Credentials** records the account in `store.json`. On the next start, an `apply-admin` step waits for Documenso to be healthy, creates the account through Documenso's own signup endpoint if the email has none, then sets its password hash, marks its email verified, adds the `ADMIN` role, and deletes its sessions. The step then clears `pendingAdmin`, which restarts Documenso.
-- Signups are disabled, except while an admin is pending.
+- Documenso has no admin bootstrap, so the package provides one. **Set Admin Credentials** records the account in `store.json`. On the next start, an `apply-admin` step waits for Documenso to be healthy, creates the account through Documenso's own signup endpoint if the email has none, then sets its password hash, marks its email verified, adds the `ADMIN` role, and revokes its sessions, password-reset links and email-confirmation links in one transaction. The step then clears `pendingAdmin`, which restarts Documenso.
+- While an admin is pending, Documenso listens on unexported port 3001 with signup enabled and rate limits off (`DANGEROUS_BYPASS_RATE_LIMITS`) for the bootstrap. The exported UI port 3000 is unavailable until the admin is applied. Registration on the exported UI always follows **Enable/Disable Signups**, disabled by default.
 - Install raises the tasks listed under [Tasks](#tasks); the admin task blocks the first start.
 
 ## Actions
@@ -89,9 +89,9 @@ Outbound: SMTP to the configured mail server, and webhooks users configure. Tele
 - **When:** first install, a forgotten admin password, or to make another existing account an admin.
 - **Changes:** stores a pending admin. The account changes on the next start, not when the action runs.
 - **Cost:** a few seconds to hash the password. If Documenso is running, it restarts twice: once to apply, and again once applied.
-- **Repeat safety:** each run replaces the password and signs that account out everywhere. Running it with a new email leaves the earlier admin in place.
+- **Repeat safety:** each run replaces the password, revokes existing password-reset and email-confirmation links, and signs that account out everywhere. Running it with a new email leaves the earlier admin in place.
 - **Outputs:** the email and a new 32-character password.
-- A new email with no account needs Documenso's signup endpoint, which the package opens only while the step runs. If signup fails, Documenso keeps running and the step retries every few seconds, logging the reason, until it succeeds.
+- A new email with no account needs Documenso's signup endpoint, which the package opens on the unexported bootstrap port. If signup fails, the step retries every few seconds, logging the reason. The exported UI stays unavailable until it succeeds; **Set Admin Credentials** remains available to replace the pending account.
 
 **Set Primary URL** (`set-primary-url`)
 
@@ -121,12 +121,12 @@ Outbound: SMTP to the configured mail server, and webhooks users configure. Tele
 
 ## Health Checks
 
-| Check       | Probes                                 | Grace   | A failure means                                                                                                                                                               |
-| ----------- | -------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `postgres`  | `pg_isready` on `127.0.0.1`            | default | PostgreSQL has not started. Read the `postgres` lines in the service log.                                                                                                     |
-| `documenso` | `GET http://localhost:3000/api/health` | 120 s   | Documenso is still migrating or starting, or cannot reach the database. A missing signing certificate shows as healthy: the endpoint reports it as a warning with status 200. |
+| Check       | Probes                                                                                                         | Grace   | A failure means                                                                                                                                                               |
+| ----------- | -------------------------------------------------------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`  | `pg_isready` on `127.0.0.1`                                                                                    | default | PostgreSQL has not started. Read the `postgres` lines in the service log.                                                                                                     |
+| `documenso` | `GET /api/health` on the active internal port (3001 during admin bootstrap, otherwise 3000); requires HTTP 2xx | 120 s   | Documenso is still migrating or starting, or cannot reach the database. A missing signing certificate shows as healthy: the endpoint reports it as a warning with status 200. |
 
-Health-check `ECONNREFUSED` lines in the log during the first seconds after a start are the check polling before Documenso listens.
+Transient health-check failures in the log during the first seconds after a start are the check polling before Documenso listens.
 
 ## Backups and Restore
 

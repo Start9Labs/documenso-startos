@@ -4,6 +4,7 @@ import { i18n } from './i18n'
 import { primaryUrl } from './primaryUrl'
 import { sdk } from './sdk'
 import {
+  adminBootstrapPort,
   databaseUrl,
   documensoWorkdir,
   postgresDb,
@@ -14,8 +15,6 @@ import {
   signingSubpath,
   uiPort,
 } from './utils'
-
-const internalUrl = `http://localhost:${uiPort}`
 
 // Creates the pending admin through Documenso's own signup when the address has
 // no account, then sets its password hash, verifies it and grants `ADMIN`.
@@ -36,16 +35,23 @@ const { ADMIN_EMAIL: email, ADMIN_NAME: name, ADMIN_PASSWORD_HASH: passwordHash,
     if (!res.ok) throw new Error('Signup failed (' + res.status + '): ' + (await res.text()))
     user = await prisma.user.findFirstOrThrow({ where: { email } })
   }
-  await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      password: passwordHash,
-      emailVerified: user.emailVerified ?? new Date(),
-      disabled: false,
-      roles: user.roles.includes('ADMIN') ? user.roles : [...user.roles, 'ADMIN'],
-    },
-  })
-  await prisma.session.deleteMany({ where: { userId: user.id } })
+  // Admin rotation revokes prior recovery links, confirmation links and sessions.
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: user.id },
+      data: {
+        password: passwordHash,
+        emailVerified: user.emailVerified ?? new Date(),
+        disabled: false,
+        roles: user.roles.includes('ADMIN') ? user.roles : [...user.roles, 'ADMIN'],
+      },
+    }),
+    prisma.passwordResetToken.deleteMany({ where: { userId: user.id } }),
+    prisma.verificationToken.deleteMany({
+      where: { userId: user.id, identifier: 'confirmation-email' },
+    }),
+    prisma.session.deleteMany({ where: { userId: user.id } }),
+  ])
 })()
   .finally(() => prisma.$disconnect())
   .catch((e) => { console.error(e); process.exit(1) })
@@ -58,7 +64,11 @@ export const main = sdk.setupMain(async ({ effects }) => {
   if (!store?.postgresPassword) throw new Error('store.json not found')
   const { pendingAdmin } = store
 
-  const webappUrl = await primaryUrl.bestUsable(effects).const()
+  // Admin bootstrap must not open registration on the exported UI binding.
+  const appPort = pendingAdmin ? adminBootstrapPort : uiPort
+  const internalUrl = `http://localhost:${appPort}`
+  const webappUrl =
+    (await primaryUrl.bestUsable(effects).const()) ?? internalUrl
 
   let smtp: T.SmtpValue | null = null
   if (store.smtp.selection === 'system') {
@@ -138,12 +148,12 @@ export const main = sdk.setupMain(async ({ effects }) => {
       exec: {
         command: sdk.useEntrypoint(),
         env: {
-          PORT: String(uiPort),
+          PORT: String(appPort),
           NEXTAUTH_SECRET: store.nextauthSecret ?? '',
           NEXT_PRIVATE_ENCRYPTION_KEY: store.encryptionKey ?? '',
           NEXT_PRIVATE_ENCRYPTION_SECONDARY_KEY:
             store.encryptionSecondaryKey ?? '',
-          ...(webappUrl ? { NEXT_PUBLIC_WEBAPP_URL: webappUrl } : {}),
+          NEXT_PUBLIC_WEBAPP_URL: webappUrl,
           NEXT_PRIVATE_INTERNAL_WEBAPP_URL: internalUrl,
           NEXT_PRIVATE_DATABASE_URL: dbUrl,
           NEXT_PRIVATE_DIRECT_DATABASE_URL: dbUrl,
@@ -153,16 +163,28 @@ export const main = sdk.setupMain(async ({ effects }) => {
           NEXT_PUBLIC_DISABLE_SIGNUP:
             store.signupsEnabled || pendingAdmin ? 'false' : 'true',
           DOCUMENSO_DISABLE_TELEMETRY: 'true',
+          // Failed bootstrap retries otherwise exhaust the signup rate limit.
+          ...(pendingAdmin ? { DANGEROUS_BYPASS_RATE_LIMITS: 'true' } : {}),
           ...(smtp ? toSmtpEnv(smtp) : {}),
         },
       },
       ready: {
         display: i18n('Web Interface'),
         fn: () =>
-          sdk.healthCheck.checkWebUrl(effects, `${internalUrl}/api/health`, {
-            successMessage: i18n('The web interface is ready'),
-            errorMessage: i18n('The web interface is not ready'),
-          }),
+          sdk.healthCheck.runHealthScript(
+            [
+              'node',
+              '-e',
+              `fetch(${JSON.stringify(`${internalUrl}/api/health`)}, { signal: AbortSignal.timeout(1000) })
+                .then((res) => process.exit(res.ok ? 0 : 1))
+                .catch(() => process.exit(1))`,
+            ],
+            documensoSub,
+            {
+              message: () => i18n('The web interface is ready'),
+              errorMessage: i18n('The web interface is not ready'),
+            },
+          ),
         gracePeriod: 120_000,
       },
       requires: ['postgres'],
@@ -182,7 +204,7 @@ export const main = sdk.setupMain(async ({ effects }) => {
                   ADMIN_NAME: pendingAdmin.name,
                   ADMIN_PASSWORD_HASH: pendingAdmin.passwordHash,
                   INTERNAL_URL: internalUrl,
-                  WEBAPP_ORIGIN: new URL(webappUrl ?? internalUrl).origin,
+                  WEBAPP_ORIGIN: new URL(webappUrl).origin,
                 },
               })
               await storeJson.merge(effects, {
